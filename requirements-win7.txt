@@ -1,4 +1,4 @@
-# Сборка, совместимая с Windows 7 SP1 (Python 3.8 — последняя версия с поддержкой Win7)
+# Build compatible with Windows 7 SP1 (Python 3.8 is the last version supporting Win7)
 PySide2==5.15.2.1
 python-docx==1.1.2
 lxml==5.4.0

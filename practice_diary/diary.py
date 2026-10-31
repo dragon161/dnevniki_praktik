@@ -18,7 +18,24 @@ from . import docx_utils as du
 from .models import Group, Student
 from .places import PlacesBook
 
-DEFAULT_TEMPLATE = Path(__file__).resolve().parent.parent / "templates" / "diary_template.docx"
+
+
+def _default_template() -> Path:
+    """Шаблон рядом с программой (папка templates); в собранном .exe — сначала рядом с .exe,
+    затем встроенный."""
+    import sys
+    candidates = []
+    if getattr(sys, "frozen", False):
+        candidates.append(Path(sys.executable).resolve().parent / "templates")
+        candidates.append(Path(getattr(sys, "_MEIPASS", "")) / "templates")
+    candidates.append(Path(__file__).resolve().parent.parent / "templates")
+    for c in candidates:
+        if (c / "diary_template.docx").exists():
+            return c / "diary_template.docx"
+    return candidates[-1] / "diary_template.docx"
+
+
+DEFAULT_TEMPLATE = _default_template()
 
 # Этапы рабочего графика: доли от длительности практики (начало, конец).
 # Подобраны по образцу: 03.12–04.12, 04.12–05.12, 05.12–12.12, 12.12–25.12, 26.12–30.12, 30.12

@@ -1,19 +1,26 @@
-"""Графический интерфейс (PySide6)."""
+"""Графический интерфейс (PySide6 или PySide2)."""
 from __future__ import annotations
 
 import sys
 import traceback
 from pathlib import Path
 
-from PySide6.QtCore import (QAbstractTableModel, QModelIndex, QSettings, QSortFilterProxyModel, Qt,
-                            QUrl)
-from PySide6.QtGui import QAction, QDesktopServices, QKeySequence
-from PySide6.QtWidgets import (QAbstractItemView, QApplication, QCheckBox, QDialog,
-                               QDialogButtonBox, QFileDialog, QFormLayout, QGroupBox, QHBoxLayout,
-                               QHeaderView, QLabel, QLineEdit, QListWidget, QListWidgetItem,
-                               QMainWindow, QMessageBox, QPlainTextEdit, QProgressDialog,
-                               QPushButton, QSplitter, QStyledItemDelegate, QTableView,
-                               QTableWidget, QTableWidgetItem, QToolBar, QVBoxLayout, QWidget)
+from .qt import QAction, QtCore, QtGui, QtWidgets, enable_high_dpi, exec_
+
+QAbstractTableModel, QModelIndex, QSettings, QSortFilterProxyModel, Qt, QUrl = (
+    QtCore.QAbstractTableModel, QtCore.QModelIndex, QtCore.QSettings,
+    QtCore.QSortFilterProxyModel, QtCore.Qt, QtCore.QUrl)
+QDesktopServices, QKeySequence = QtGui.QDesktopServices, QtGui.QKeySequence
+_w = QtWidgets
+(QAbstractItemView, QApplication, QCheckBox, QDialog, QDialogButtonBox, QFileDialog, QFormLayout,
+ QGroupBox, QHBoxLayout, QHeaderView, QLabel, QLineEdit, QListWidget, QListWidgetItem, QMainWindow,
+ QMessageBox, QPlainTextEdit, QProgressDialog, QPushButton, QSplitter, QStyledItemDelegate,
+ QTableView, QTableWidget, QTableWidgetItem, QToolBar, QVBoxLayout, QWidget) = (
+    _w.QAbstractItemView, _w.QApplication, _w.QCheckBox, _w.QDialog, _w.QDialogButtonBox,
+    _w.QFileDialog, _w.QFormLayout, _w.QGroupBox, _w.QHBoxLayout, _w.QHeaderView, _w.QLabel,
+    _w.QLineEdit, _w.QListWidget, _w.QListWidgetItem, _w.QMainWindow, _w.QMessageBox,
+    _w.QPlainTextEdit, _w.QProgressDialog, _w.QPushButton, _w.QSplitter, _w.QStyledItemDelegate,
+    _w.QTableView, _w.QTableWidget, _w.QTableWidgetItem, _w.QToolBar, _w.QVBoxLayout, _w.QWidget)
 
 from .diary import DEFAULT_TEMPLATE, DiaryOptions, generate_diary
 from .models import COLUMNS, HEADER_FIELDS, Group, Student
@@ -107,7 +114,7 @@ class StudentsModel(QAbstractTableModel):
         g, s = self.rows[index.row()]
         key = self.column_key(index.column())
         if role == Qt.CheckStateRole and key == "_check":
-            checked = value in (Qt.Checked, Qt.Checked.value, 2, True)
+            checked = value == Qt.Checked or value in (2, True) or getattr(value, "value", None) == 2
             (self.checked.add if checked else self.checked.discard)(id(s))
             self.dataChanged.emit(index, index)
             return True
@@ -800,7 +807,7 @@ class MainWindow(QMainWindow):
         if import_now:
             dlg.show()
             dlg.import_excel()
-        dlg.exec()
+        exec_(dlg)
         self.model.layoutChanged.emit()
         self.table.resizeRowsToContents()
 
@@ -819,7 +826,7 @@ class MainWindow(QMainWindow):
                                     "Отметьте галочкой студентов (первый столбец).")
             return
         dlg = GenerateDialog(rows, self.settings, self.places, self)
-        if dlg.exec() != QDialog.Accepted:
+        if exec_(dlg) != QDialog.Accepted:
             return
         opts = dlg.options()
         if not opts.template.exists():
@@ -855,11 +862,12 @@ class MainWindow(QMainWindow):
 
 def main(argv=None):
     argv = sys.argv if argv is None else argv
+    enable_high_dpi()
     app = QApplication(argv)
     app.setApplicationName("Дневники практики")
     w = MainWindow(argv[1] if len(argv) > 1 else None)
     w.show()
-    return app.exec()
+    return exec_(app)
 
 
 if __name__ == "__main__":

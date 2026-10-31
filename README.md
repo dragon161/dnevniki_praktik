@@ -72,6 +72,36 @@ py main.py
 Свой шаблон: любой .docx, в котором заменяемые значения выделены жёлтым маркером, а подписи
 полей («Фамилия», «Группа», «Период практики», …) такие же, как в `templates/diary_template.docx`.
 
+## Готовая программа (.exe) для Windows 7 SP1 – 11
+
+Python для запуска .exe не нужен.
+
+**Скачать собранную версию.** После каждого изменения в `main` GitHub собирает программу сам:
+вкладка **Actions** → последний запуск «Сборка для Windows» → внизу раздел **Artifacts**:
+
+* `DnevnikiPraktiki-win32` — подходит для **любой** Windows (32- и 64-битной), выбирайте его,
+  если не уверены;
+* `DnevnikiPraktiki-win64` — для 64-битной Windows.
+
+Распакуйте архив и запустите `DnevnikiPraktiki.exe`. Папка `templates` рядом с программой
+содержит шаблон дневника — его можно заменить своим, не пересобирая программу.
+
+Чтобы получить постоянную ссылку на скачивание (раздел **Releases**), поставьте тег версии:
+`git tag v1.0` и `git push origin v1.0`.
+
+**Собрать самостоятельно** (на любой Windows): установите **Python 3.8.10**
+(https://www.python.org/downloads/release/python-3810/, для 32-битной сборки — «Windows installer
+(32-bit)») и запустите `build.bat`. Результат — `dist\DnevnikiPraktiki.exe`.
+
+Почему так: Python 3.8 — последняя версия, работающая на Windows 7, а Qt 6 (PySide6) Windows 7
+не поддерживает, поэтому сборка использует PySide2 (Qt 5.15). Программа сама выбирает, какой Qt
+установлен (`practice_diary/qt.py`). Для обычного запуска из исходников на Windows 10/11 по-прежнему
+подходит `requirements.txt` с PySide6.
+
+**Если на Windows 7 программа не запускается** (ошибка про `api-ms-win-crt-*.dll` или
+`VCRUNTIME140.dll`), установите Service Pack 1 и обновления KB2533623 и KB2999226
+(Universal C Runtime) с сайта Microsoft или через Центр обновления.
+
 ## Командная строка
 
 ```bash
@@ -112,7 +142,12 @@ practice_diary/
   diary.py                  генерация дневника по жёлтым полям шаблона
   places.py                 справочник «место → руководитель», импорт из Excel
   docx_utils.py             работа с XML Word (ячейки, объединения, выделение)
-  gui.py                    интерфейс на PySide6
+  gui.py                    интерфейс (PySide6 или PySide2)
+  qt.py                     совместимость PySide6 / PySide2
   cli.py                    командная строка
 templates/diary_template.docx   шаблон дневника
+DnevnikiPraktiki.spec       настройки сборки PyInstaller
+build.bat                   сборка .exe на Windows
+requirements-win7.txt       версии библиотек для сборки под Windows 7
+.github/workflows/build.yml автоматическая сборка на GitHub
 ```

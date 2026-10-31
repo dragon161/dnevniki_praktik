@@ -1,0 +1,66 @@
+name: Сборка для Windows (7 SP1 и новее)
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    strategy:
+      matrix:
+        include:
+          - arch: x64
+            suffix: win64
+          - arch: x86
+            suffix: win32
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.8"
+          architecture: ${{ matrix.arch }}
+
+      - name: Установка зависимостей
+        run: |
+          python -m pip install --upgrade "pip<25"
+          python -m pip install -r requirements-win7.txt
+
+      - name: Проверка
+        run: python -c "import practice_diary.gui, practice_diary.places; print('ok')"
+
+      - name: Сборка exe
+        run: pyinstaller --noconfirm --clean DnevnikiPraktiki.spec
+
+      - name: Упаковка
+        shell: pwsh
+        run: |
+          $dir = "DnevnikiPraktiki-${{ matrix.suffix }}"
+          New-Item -ItemType Directory $dir | Out-Null
+          Copy-Item dist\DnevnikiPraktiki.exe $dir\
+          New-Item -ItemType Directory "$dir\templates" | Out-Null
+          Copy-Item templates\diary_template.docx "$dir\templates\"
+          Compress-Archive -Path "$dir\*" -DestinationPath "$dir.zip"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DnevnikiPraktiki-${{ matrix.suffix }}
+          path: DnevnikiPraktiki-${{ matrix.suffix }}.zip
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: "*.zip"

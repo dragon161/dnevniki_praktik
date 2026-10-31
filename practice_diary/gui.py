@@ -7,16 +7,17 @@ from pathlib import Path
 
 from PySide6.QtCore import (QAbstractTableModel, QModelIndex, QSettings, QSortFilterProxyModel, Qt,
                             QUrl)
-from PySide6.QtGui import QAction, QBrush, QColor, QDesktopServices, QKeySequence
+from PySide6.QtGui import QAction, QDesktopServices, QKeySequence
 from PySide6.QtWidgets import (QAbstractItemView, QApplication, QCheckBox, QDialog,
                                QDialogButtonBox, QFileDialog, QFormLayout, QGroupBox, QHBoxLayout,
                                QHeaderView, QLabel, QLineEdit, QListWidget, QListWidgetItem,
                                QMainWindow, QMessageBox, QPlainTextEdit, QProgressDialog,
-                               QPushButton, QSplitter, QStyledItemDelegate, QTableView, QToolBar,
-                               QVBoxLayout, QWidget)
+                               QPushButton, QSplitter, QStyledItemDelegate, QTableView,
+                               QTableWidget, QTableWidgetItem, QToolBar, QVBoxLayout, QWidget)
 
 from .diary import DEFAULT_TEMPLATE, DiaryOptions, generate_diary
 from .models import COLUMNS, HEADER_FIELDS, Group, Student
+from .places import PlaceEntry, PlacesBook, normalize
 from .predstavlenie import Predstavlenie
 
 ORG_COL_TITLE = "Руководитель от организации"
@@ -31,7 +32,11 @@ class StudentsModel(QAbstractTableModel):
         super().__init__(parent)
         self.rows: list[tuple[Group, Student]] = []
         self.checked: set[int] = set()  # id(Student)
+        self.places: PlacesBook | None = None
         self.on_change = lambda: None
+
+    def org_head(self, s: Student) -> str:
+        return self.places.head_for(s.get("place")) if self.places else ""
 
     def set_data(self, pr: Predstavlenie | None):
         self.beginResetModel()
@@ -70,7 +75,7 @@ class StudentsModel(QAbstractTableModel):
         f = Qt.ItemIsEnabled | Qt.ItemIsSelectable
         if key == "_check":
             return f | Qt.ItemIsUserCheckable
-        if key == "_group":
+        if key in ("_group", "_org"):
             return f
         return f | Qt.ItemIsEditable
 
@@ -87,20 +92,15 @@ class StudentsModel(QAbstractTableModel):
             if key == "_group":
                 return g.name
             if key == "_org":
-                return s.org_supervisor
+                if role == Qt.ToolTipRole:
+                    return "Задаётся в меню «Справочники → Руководители по местам практики»"
+                return self.org_head(s)
             text = s.get(key)
             if role == Qt.DisplayRole:
                 text = text.replace("\n", " ")
                 if key == "name" and not text:
                     return "‹ФИО не заполнено›"
             return text
-        if role == Qt.BackgroundRole:
-            if not s.get("name"):
-                return QBrush(QColor("#ffd6d6"))
-            if s.highlighted:
-                return QBrush(QColor("#fff7b3"))
-        if role == Qt.ForegroundRole and key == "name" and not s.get("name"):
-            return QBrush(QColor("#a00"))
         return None
 
     def setData(self, index, value, role=Qt.EditRole):
@@ -114,14 +114,9 @@ class StudentsModel(QAbstractTableModel):
         if role != Qt.EditRole:
             return False
         value = (value or "").strip()
-        if key == "_org":
-            if s.org_supervisor == value:
-                return False
-            s.org_supervisor = value
-        else:
-            if s.get(key) == value:
-                return False
-            s.values[key] = value
+        if s.get(key) == value:
+            return False
+        s.values[key] = value
         self.dataChanged.emit(index, index)
         self.on_change()
         return True
@@ -141,7 +136,7 @@ class FilterProxy(QSortFilterProxyModel):
         if self.group is not None and g is not self.group:
             return False
         if self.text:
-            hay = " ".join([g.name, s.org_supervisor, *s.values.values()]).lower()
+            hay = " ".join([g.name, self.sourceModel().org_head(s), *s.values.values()]).lower()
             return all(w in hay for w in self.text.lower().split())
         return True
 
@@ -178,20 +173,246 @@ class TextDelegate(QStyledItemDelegate):
         editor.setGeometry(r)
 
 
+# ====================== справочник руководителей ======================
+
+class PlacesDialog(QDialog):
+    """Руководители от профильной организации по местам практики.
+
+    Показывает все места из справочника и из открытого представления. Руководитель
+    вписывается один раз на место и сразу сохраняется в справочник.
+    """
+    COL_PLACE, COL_HEAD, COL_COUNT = range(3)
+
+    def __init__(self, book: PlacesBook, pr: Predstavlenie | None, settings: QSettings,
+                 parent=None, focus_place: str | None = None):
+        super().__init__(parent)
+        self.setWindowTitle("Руководители по местам практики")
+        self.resize(900, 560)
+        self.book, self.pr, self.settings = book, pr, settings
+        self._filling = False
+        lay = QVBoxLayout(self)
+        lay.addWidget(QLabel(
+            "Впишите руководителя от профильной организации для каждого места — он будет "
+            "подставляться в дневники всех студентов этого места. Изменения сохраняются сразу."))
+
+        top = QHBoxLayout()
+        self.search = QLineEdit()
+        self.search.setPlaceholderText("Поиск места или руководителя…")
+        self.search.textChanged.connect(self.apply_filter)
+        top.addWidget(self.search, 1)
+        self.only_empty = QCheckBox("Только без руководителя")
+        self.only_empty.toggled.connect(self.apply_filter)
+        top.addWidget(self.only_empty)
+        lay.addLayout(top)
+
+        self.table = QTableWidget(0, 3)
+        self.table.setHorizontalHeaderLabels(
+            ["Место проведения практики", "Руководитель от организации", "Студентов в файле"])
+        hh = self.table.horizontalHeader()
+        hh.setSectionResizeMode(self.COL_PLACE, QHeaderView.Stretch)
+        hh.setSectionResizeMode(self.COL_HEAD, QHeaderView.Interactive)
+        hh.setSectionResizeMode(self.COL_COUNT, QHeaderView.ResizeToContents)
+        self.table.setColumnWidth(self.COL_HEAD, 240)
+        self.table.setWordWrap(True)
+        self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.table.setEditTriggers(QAbstractItemView.DoubleClicked | QAbstractItemView.EditKeyPressed
+                                   | QAbstractItemView.AnyKeyPressed)
+        self.table.itemChanged.connect(self.item_changed)
+        lay.addWidget(self.table, 1)
+
+        btns = QHBoxLayout()
+        b_imp = QPushButton("📥 Загрузить из Excel…")
+        b_imp.clicked.connect(self.import_excel)
+        b_add = QPushButton("➕ Добавить место")
+        b_add.clicked.connect(self.add_place)
+        b_del = QPushButton("➖ Удалить из справочника")
+        b_del.clicked.connect(self.delete_place)
+        for b in (b_imp, b_add, b_del):
+            btns.addWidget(b)
+        btns.addStretch(1)
+        self.info = QLabel()
+        btns.addWidget(self.info)
+        b_close = QPushButton("Закрыть")
+        b_close.clicked.connect(self.accept)
+        btns.addWidget(b_close)
+        lay.addLayout(btns)
+
+        self.fill()
+        if focus_place:
+            self.focus(focus_place)
+
+    # ---------- данные ----------
+    def _file_places(self) -> dict[str, int]:
+        counts: dict[str, int] = {}
+        if self.pr:
+            for g in self.pr.groups:
+                for st in g.students:
+                    pl = st.get("place").replace("\n", " ").strip()
+                    if pl and st.get("name"):
+                        counts[pl] = counts.get(pl, 0) + 1
+        return counts
+
+    def fill(self):
+        """Строки: записи справочника + места из файла, которых в справочнике нет."""
+        rows = []  # (place, head, count, entry|None)
+        per_entry: dict[int, int] = {}
+        unmatched: dict[str, list] = {}  # нормализованное название -> [текст, кол-во]
+        for pl, n in self._file_places().items():
+            e = self.book.find(pl)
+            if e is None:
+                slot = unmatched.setdefault(normalize(pl), [pl, 0])
+                slot[1] += n
+            else:
+                per_entry[id(e)] = per_entry.get(id(e), 0) + n
+        for e in self.book.entries:
+            rows.append((e.place, e.head, per_entry.get(id(e), 0), e))
+        for pl, n in unmatched.values():
+            rows.append((pl, "", n, None))
+        # сначала места из файла без руководителя, затем по алфавиту
+        rows.sort(key=lambda r: (not (r[2] and not r[1]), r[2] == 0, r[0].lower()))
+
+        self._filling = True
+        self.table.setRowCount(len(rows))
+        for i, (pl, head, n, e) in enumerate(rows):
+            it_pl = QTableWidgetItem(pl)
+            it_pl.setData(Qt.UserRole, e)
+            if e is None:
+                it_pl.setFlags(it_pl.flags() & ~Qt.ItemIsEditable)
+                it_pl.setToolTip("Место из открытого представления, пока не в справочнике")
+            it_head = QTableWidgetItem(head)
+            it_n = QTableWidgetItem(str(n) if n else "")
+            it_n.setFlags(it_n.flags() & ~Qt.ItemIsEditable)
+            it_n.setTextAlignment(Qt.AlignCenter)
+            self.table.setItem(i, self.COL_PLACE, it_pl)
+            self.table.setItem(i, self.COL_HEAD, it_head)
+            self.table.setItem(i, self.COL_COUNT, it_n)
+        self._filling = False
+        self.table.resizeRowsToContents()
+        self.apply_filter()
+
+    def _update_info(self):
+        missing = sum(1 for i in range(self.table.rowCount())
+                      if self.table.item(i, self.COL_COUNT).text()
+                      and not self.table.item(i, self.COL_HEAD).text().strip())
+        self.info.setText(f"Мест в справочнике: {len(self.book.entries)}   |   "
+                          f"мест из файла без руководителя: {missing}")
+
+    def apply_filter(self, *_):
+        words = self.search.text().lower().split()
+        for i in range(self.table.rowCount()):
+            pl = self.table.item(i, self.COL_PLACE).text().lower()
+            head = self.table.item(i, self.COL_HEAD).text()
+            hide = bool(words) and not all(w in f"{pl} {head.lower()}" for w in words)
+            if self.only_empty.isChecked() and head.strip():
+                hide = True
+            self.table.setRowHidden(i, hide)
+        self._update_info()
+
+    def focus(self, place: str):
+        target = self.book.find(place)
+        for i in range(self.table.rowCount()):
+            it = self.table.item(i, self.COL_PLACE)
+            e = it.data(Qt.UserRole)
+            if (target is not None and e is target) or (e is None and it.text() == place.strip()):
+                self.table.setCurrentCell(i, self.COL_HEAD)
+                self.table.scrollToItem(it)
+                self.table.editItem(self.table.item(i, self.COL_HEAD))
+                return
+
+    # ---------- изменения ----------
+    def item_changed(self, item: QTableWidgetItem):
+        if self._filling:
+            return
+        row = item.row()
+        it_pl = self.table.item(row, self.COL_PLACE)
+        entry = it_pl.data(Qt.UserRole)
+        place = it_pl.text().strip()
+        head = self.table.item(row, self.COL_HEAD).text().strip()
+        if entry is None:
+            if item.column() != self.COL_HEAD or not head:
+                return
+            entry = self.book.set_head(place, head)
+            self._filling = True
+            it_pl.setData(Qt.UserRole, entry)
+            it_pl.setFlags(it_pl.flags() | Qt.ItemIsEditable)
+            it_pl.setToolTip("")
+            self._filling = False
+        else:
+            if not place:
+                self._filling = True
+                it_pl.setText(entry.place)
+                self._filling = False
+                return
+            entry.place, entry.head = place, head
+        self._save()
+        self._update_info()
+
+    def _save(self):
+        try:
+            self.book.save()
+        except OSError as e:
+            QMessageBox.critical(self, "Ошибка", f"Не удалось сохранить справочник:\n{e}")
+
+    def add_place(self):
+        self.book.entries.append(PlaceEntry("Новое место", ""))
+        self._save()
+        self.fill()
+        for i in range(self.table.rowCount()):
+            if self.table.item(i, self.COL_PLACE).text() == "Новое место":
+                self.table.setRowHidden(i, False)
+                self.table.setCurrentCell(i, self.COL_PLACE)
+                self.table.editItem(self.table.item(i, self.COL_PLACE))
+                break
+
+    def delete_place(self):
+        rows = sorted({i.row() for i in self.table.selectedIndexes()})
+        entries = [self.table.item(r, self.COL_PLACE).data(Qt.UserRole) for r in rows]
+        entries = [e for e in entries if e is not None]
+        if not entries:
+            return
+        names = "\n".join(e.place for e in entries)
+        if QMessageBox.question(self, "Удаление", f"Удалить из справочника:\n{names}?") \
+                != QMessageBox.Yes:
+            return
+        for e in entries:
+            self.book.remove(e)
+        self._save()
+        self.fill()
+
+    def import_excel(self):
+        f, _ = QFileDialog.getOpenFileName(self, "Excel с руководителями",
+                                           self.settings.value("excel_dir", str(Path.home())),
+                                           "Excel (*.xlsx *.xlsm)")
+        if not f:
+            return
+        self.settings.setValue("excel_dir", str(Path(f).parent))
+        try:
+            added, updated = self.book.import_excel(f)
+        except Exception as e:  # noqa: BLE001
+            QMessageBox.critical(self, "Ошибка", f"Не удалось прочитать Excel:\n{e}")
+            return
+        self._save()
+        self.fill()
+        QMessageBox.information(self, "Загрузка из Excel",
+                                f"Добавлено мест: {added}\nОбновлено руководителей: {updated}")
+
+
 # ====================== диалог генерации ======================
 
 class GenerateDialog(QDialog):
-    def __init__(self, rows, settings: QSettings, parent=None):
+    def __init__(self, rows, settings: QSettings, places: PlacesBook, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Создание дневников")
         self.resize(640, 520)
         self.rows = rows
         self.settings = settings
+        self.places = places
         lay = QVBoxLayout(self)
 
         lst = QListWidget()
         for g, s in rows:
-            warn = "" if (s.org_supervisor) else "   (руководитель от организации не указан)"
+            warn = "" if places.head_for(s.get("place")) else \
+                "   (нет руководителя от организации — заполните справочник)"
             lst.addItem(f"{s.get('name')} — {g.name}{warn}")
         box = QGroupBox(f"Выбрано студентов: {len(rows)}")
         bl = QVBoxLayout(box)
@@ -206,9 +427,6 @@ class GenerateDialog(QDialog):
         self.pattern = QLineEdit(settings.value("pattern", "Дневник_{surname}_{group}.docx"))
         self.pattern.setToolTip("Доступно: {surname} {name} {short_name} {group}")
         form.addRow("Имя файла:", self.pattern)
-        self.org = QLineEdit(settings.value("org_default", ""))
-        self.org.setPlaceholderText("для тех, у кого не заполнено, напр. «Иванов И.И.»")
-        form.addRow("Руководитель от орг.\nпо умолчанию:", self.org)
         self.gender = QCheckBox("Согласовать род в отзыве (Студент/Студентка, прошел/прошла …)")
         self.gender.setChecked(settings.value("gender", "true") == "true")
         form.addRow(self.gender)
@@ -254,14 +472,13 @@ class GenerateDialog(QDialog):
         s.setValue("template", self.template.text())
         s.setValue("outdir", self.outdir.text())
         s.setValue("pattern", self.pattern.text())
-        s.setValue("org_default", self.org.text())
         s.setValue("gender", "true" if self.gender.isChecked() else "false")
         s.setValue("unhl", "true" if self.unhl.isChecked() else "false")
         return DiaryOptions(template=Path(self.template.text()),
                             output_dir=Path(self.outdir.text()),
                             filename_pattern=self.pattern.text() or "Дневник_{surname}_{group}.docx",
                             gender_agreement=self.gender.isChecked(),
-                            default_org_supervisor=self.org.text())
+                            places=self.places)
 
 
 # ====================== главное окно ======================
@@ -272,10 +489,12 @@ class MainWindow(QMainWindow):
         self.settings = QSettings("practice_diary", "practice_diary")
         self.pr: Predstavlenie | None = None
         self.dirty = False
+        self.places = PlacesBook.load()
         self.resize(1400, 800)
 
         self.model = StudentsModel(self)
         self.model.on_change = self.mark_dirty
+        self.model.places = self.places
         self.proxy = FilterProxy(self)
         self.proxy.setSourceModel(self.model)
 
@@ -306,6 +525,23 @@ class MainWindow(QMainWindow):
         act("➖ Удалить студента", self.delete_student, QKeySequence.Delete)
         tb.addSeparator()
         act("📝 Создать дневники для отмеченных", self.generate)
+        tb.addSeparator()
+        act("👤 Руководители по местам", self.edit_places)
+
+        # меню
+        mb = self.menuBar()
+        m_file = mb.addMenu("Файл")
+        for text, slot, sc in (("Открыть представление…", self.choose_file, QKeySequence.Open),
+                               ("Сохранить", self.save, None),
+                               ("Сохранить как…", self.save_as, None)):
+            a = m_file.addAction(text)
+            a.triggered.connect(slot)
+        m_file.addSeparator()
+        m_file.addAction("Выход").triggered.connect(self.close)
+        m_ref = mb.addMenu("Справочники")
+        m_ref.addAction("Руководители по местам практики…").triggered.connect(self.edit_places)
+        m_ref.addAction("Загрузить руководителей из Excel…").triggered.connect(
+            lambda: self.edit_places(import_now=True))
 
         splitter = QSplitter()
         # слева — группы и шапка
@@ -348,6 +584,7 @@ class MainWindow(QMainWindow):
         self.table = QTableView()
         self.table.setModel(self.proxy)
         self.table.setItemDelegate(TextDelegate(self.table))
+        self.table.doubleClicked.connect(self.table_double_clicked)
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.table.setEditTriggers(QAbstractItemView.DoubleClicked | QAbstractItemView.EditKeyPressed
                                    | QAbstractItemView.AnyKeyPressed)
@@ -363,9 +600,10 @@ class MainWindow(QMainWindow):
 
         self.status = QLabel()
         rl.addWidget(self.status)
-        legend = QLabel("<span style='background:#fff7b3'>&nbsp;жёлтый&nbsp;</span> — ФИО выделено в "
-                        "исходном файле; <span style='background:#ffd6d6'>&nbsp;красный&nbsp;</span>"
-                        " — не заполнено ФИО. Двойной щелчок — редактировать ячейку.")
+        legend = QLabel("Двойной щелчок — редактировать ячейку. Руководитель от организации "
+                        "берётся из меню «Справочники → Руководители по местам практики» "
+                        "(двойной щелчок по его ячейке открывает справочник).")
+        legend.setWordWrap(True)
         rl.addWidget(legend)
         splitter.addWidget(right)
         splitter.setSizes([330, 1070])
@@ -554,6 +792,24 @@ class MainWindow(QMainWindow):
         self.mark_dirty()
         self.reload_view(self.groups.currentRow())
 
+    # ---------- справочник ----------
+    def edit_places(self, focus_place: str | None = None, import_now: bool = False):
+        self.table.setFocus()
+        dlg = PlacesDialog(self.places, self.pr, self.settings, self,
+                           focus_place=focus_place if isinstance(focus_place, str) else None)
+        if import_now:
+            dlg.show()
+            dlg.import_excel()
+        dlg.exec()
+        self.model.layoutChanged.emit()
+        self.table.resizeRowsToContents()
+
+    def table_double_clicked(self, index):
+        src = self.proxy.mapToSource(index)
+        if self.model.column_key(src.column()) == "_org":
+            _, s = self.model.rows[src.row()]
+            self.edit_places(focus_place=s.get("place"))
+
     # ---------- дневники ----------
     def generate(self):
         self.table.setFocus()
@@ -562,7 +818,7 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "Дневники",
                                     "Отметьте галочкой студентов (первый столбец).")
             return
-        dlg = GenerateDialog(rows, self.settings, self)
+        dlg = GenerateDialog(rows, self.settings, self.places, self)
         if dlg.exec() != QDialog.Accepted:
             return
         opts = dlg.options()

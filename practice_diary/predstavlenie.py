@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import copy
-import json
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -85,33 +84,7 @@ class Predstavlenie:
                 g._header_row = hdr_i  # type: ignore[attr-defined]
                 obj.groups.append(g)
                 header, header_idx = {}, {}
-        obj.load_extra()
         return obj
-
-    # ---------------- доп. данные (.json) ----------------
-    @property
-    def extra_path(self) -> Path:
-        return self.path.with_suffix(".diary.json")
-
-    def load_extra(self) -> None:
-        if not self.extra_path.exists():
-            return
-        try:
-            data = json.loads(self.extra_path.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            return
-        org = data.get("org_supervisor", {})
-        for g in self.groups:
-            for s in g.students:
-                s.org_supervisor = org.get(s.key(g.name), "")
-
-    def save_extra(self, target: Path) -> None:
-        org = {s.key(g.name): s.org_supervisor
-               for g in self.groups for s in g.students if s.org_supervisor}
-        p = target.with_suffix(".diary.json")
-        if org:
-            p.write_text(json.dumps({"org_supervisor": org}, ensure_ascii=False, indent=2),
-                         encoding="utf-8")
 
     # ---------------- сохранение ----------------
     def save(self, target: str | Path | None = None) -> Path:
@@ -131,16 +104,9 @@ class Predstavlenie:
             self._save_table(tables[g.table_index], g)
 
         document.save(str(target))
-        self.save_extra(target)
-        if target != self.path:
-            self.path = target
+        self.path = target
         # перечитать, чтобы индексы строк соответствовали файлу
-        fresh = Predstavlenie.load(target)
-        org = {s.key(g.name): s.org_supervisor for g in self.groups for s in g.students}
-        self.groups = fresh.groups
-        for g in self.groups:
-            for s in g.students:
-                s.org_supervisor = org.get(s.key(g.name), s.org_supervisor)
+        self.groups = Predstavlenie.load(target).groups
         return target
 
     @staticmethod

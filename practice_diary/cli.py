@@ -4,6 +4,11 @@
     python -m practice_diary.cli diary Представление.docx -s "Михайлец" -s "Асеев" -o out/
     python -m practice_diary.cli diary Представление.docx --group МЕНОZ-631 -o out/
     python -m practice_diary.cli set   Представление.docx "Михайлец" place "ООО «Ромашка»"
+
+Справочник руководителей по местам практики:
+    python -m practice_diary.cli places list
+    python -m practice_diary.cli places import Руководители.xlsx
+    python -m practice_diary.cli places set "ООО «Ромашка»" "Иванов И.И."
 """
 from __future__ import annotations
 
@@ -13,6 +18,7 @@ from pathlib import Path
 
 from .diary import DEFAULT_TEMPLATE, DiaryOptions, generate_diary
 from .models import COLUMN_TITLES, COLUMNS, HEADER_FIELDS
+from .places import PlacesBook
 from .predstavlenie import Predstavlenie
 
 
@@ -52,12 +58,10 @@ def cmd_set(a) -> int:
         print(f"Найдено студентов: {len(found)} — уточните запрос", file=sys.stderr)
         return 1
     g, s = found[0]
-    if a.field == "org_supervisor":
-        s.org_supervisor = a.value
-    elif a.field in COLUMN_TITLES:
+    if a.field in COLUMN_TITLES:
         s.values[a.field] = a.value
     else:
-        print(f"Неизвестное поле. Доступно: {', '.join(COLUMN_TITLES)} , org_supervisor",
+        print(f"Неизвестное поле. Доступно: {', '.join(COLUMN_TITLES)}",
               file=sys.stderr)
         return 1
     out = pr.save(a.output or a.file)
@@ -81,7 +85,7 @@ def cmd_diary(a) -> int:
         print("Укажите --student или --group", file=sys.stderr)
         return 1
     opts = DiaryOptions(template=Path(a.template), output_dir=Path(a.output),
-                        default_org_supervisor=a.org_supervisor or "",
+                        places=PlacesBook.load(),
                         gender_agreement=not a.no_gender)
     for g, s in targets:
         r = generate_diary(s, g, opts, remove_highlight=a.remove_highlight)
@@ -90,6 +94,26 @@ def cmd_diary(a) -> int:
             print(f"   не заполнено: {', '.join(r.missing_values)}")
         if r.unknown_fields:
             print(f"   нераспознанные жёлтые поля: {r.unknown_fields}")
+    return 0
+
+
+def cmd_places(a) -> int:
+    book = PlacesBook.load()
+    if a.action == "import":
+        added, updated = book.import_excel(a.args[0])
+        book.save()
+        print(f"Добавлено мест: {added}, обновлено руководителей: {updated}")
+    elif a.action == "set":
+        if len(a.args) != 2:
+            print('Использование: places set "Место" "Руководитель"', file=sys.stderr)
+            return 1
+        book.set_head(*a.args)
+        book.save()
+        print("Сохранено")
+    else:
+        for e in sorted(book.entries, key=lambda e: e.place.lower()):
+            print(f"{e.place}  →  {e.head or '—'}")
+    print(f"(справочник: {book.path})")
     return 0
 
 
@@ -117,10 +141,14 @@ def main(argv=None) -> int:
     p.add_argument("-g", "--group")
     p.add_argument("-o", "--output", default="diaries")
     p.add_argument("-t", "--template", default=str(DEFAULT_TEMPLATE))
-    p.add_argument("--org-supervisor", help="руководитель от организации по умолчанию")
     p.add_argument("--no-gender", action="store_true", help="не согласовывать род в отзыве")
     p.add_argument("--remove-highlight", action="store_true", help="убрать жёлтое выделение")
     p.set_defaults(func=cmd_diary)
+
+    p = sub.add_parser("places", help="справочник руководителей по местам практики")
+    p.add_argument("action", choices=["list", "import", "set"])
+    p.add_argument("args", nargs="*")
+    p.set_defaults(func=cmd_places)
 
     a = ap.parse_args(argv)
     return a.func(a)

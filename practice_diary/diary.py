@@ -16,6 +16,7 @@ from docx.oxml.ns import qn
 
 from . import docx_utils as du
 from .models import Group, Student
+from .places import PlacesBook
 
 DEFAULT_TEMPLATE = Path(__file__).resolve().parent.parent / "templates" / "diary_template.docx"
 
@@ -78,14 +79,15 @@ class DiaryOptions:
     output_dir: Path = Path(".")
     filename_pattern: str = "Дневник_{surname}_{group}.docx"
     gender_agreement: bool = True
-    default_org_supervisor: str = ""
+    # справочник «место → руководитель от профильной организации»
+    places: PlacesBook | None = None
     # перекрытие произвольных полей: {"place": "...", ...}
     overrides: dict[str, str] = field(default_factory=dict)
 
 
 def student_fields(student: Student, group: Group, opts: DiaryOptions) -> dict[str, str]:
     period = parse_period(student.get("period"))
-    org = student.org_supervisor.strip() or opts.default_org_supervisor.strip()
+    org = opts.places.head_for(student.get("place")) if opts.places else ""
     f = {
         "surname": student.surname,
         "first_patronymic": student.first_and_patronymic,

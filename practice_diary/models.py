@@ -36,8 +36,6 @@ def strip_quotes(s: str) -> str:
 class Student:
     values: dict[str, str] = field(default_factory=dict)
     highlighted: bool = False          # ФИО было выделено цветом в исходнике
-    # Данные, которых нет в представлении (хранятся в .json рядом с файлом)
-    org_supervisor: str = ""
     # служебное: индекс строки (w:tr) в таблице исходного документа, None для новых
     row_index: int | None = None
 
@@ -80,9 +78,6 @@ class Student:
         if last in ("оглы", "улы", "уулу") or re.search(r"(ич)$", last):
             return "m"
         return None
-
-    def key(self, group: str) -> str:
-        return f"{group}|{self.get('name').strip()}"
 
 
 @dataclass

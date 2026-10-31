@@ -1,4 +1,4 @@
-name: Сборка для Windows (7 SP1 и новее)
+name: Сборка для Windows (7 и новее)
 
 on:
   push:
@@ -27,7 +27,7 @@ jobs:
 
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.8"
+          python-version: "3.7"
           architecture: ${{ matrix.arch }}
 
       - name: Установка зависимостей
@@ -40,6 +40,25 @@ jobs:
 
       - name: Сборка exe
         run: pyinstaller --noconfirm --clean DnevnikiPraktiki.spec
+
+      - name: Проверка, что UCRT и VCRUNTIME встроены
+        shell: pwsh
+        run: |
+          $list = pyi-archive_viewer --list dist\DnevnikiPraktiki.exe | Out-String
+          foreach ($dll in "ucrtbase.dll", "api-ms-win-crt-runtime-l1-1-0.dll", "vcruntime140.dll") {
+            if ($list -notmatch [regex]::Escape($dll)) { throw "$dll не встроен в exe" }
+            Write-Host "OK: $dll"
+          }
+
+      - name: Пробный запуск exe
+        shell: pwsh
+        run: |
+          $p = Start-Process dist\DnevnikiPraktiki.exe -PassThru
+          Start-Sleep -Seconds 20
+          if ($p.HasExited) { throw "Программа завершилась сразу после запуска (код $($p.ExitCode))" }
+          Write-Host "Программа запустилась"
+          Stop-Process -Id $p.Id -Force
+          Get-Process DnevnikiPraktiki -ErrorAction SilentlyContinue | Stop-Process -Force
 
       - name: Упаковка
         shell: pwsh

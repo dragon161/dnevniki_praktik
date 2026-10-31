@@ -1,6 +1,8 @@
-# Build compatible with Windows 7 SP1 (Python 3.8 is the last version supporting Win7)
+# Build compatible with Windows 7 (SP1) WITHOUT extra updates:
+# Python 3.7 does not need KB2533623 (Python 3.8+ does), and the Universal
+# C Runtime (KB2999226) is bundled into the exe by DnevnikiPraktiki.spec.
 PySide2==5.15.2.1
-python-docx==1.1.2
+python-docx==1.1.0
 lxml==5.4.0
-openpyxl==3.1.5
+openpyxl==3.1.3
 pyinstaller==5.13.2
